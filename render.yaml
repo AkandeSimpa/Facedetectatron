@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: FaceDetectatron
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
+    envVars:
+      - key: PINECONE_API_KEY
+        sync: false
+      - key: MODEL_NAME
+        value: Facenet
+      - key: DB_DIM
+        value: "128"
+      - key: INDEX_NAME
+        value: breadmaker
