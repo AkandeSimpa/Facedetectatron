@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+deepface
+pillow
+pinecone-client
+python-multipart
+opencv-python-headless
