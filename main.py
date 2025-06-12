@@ -5,7 +5,7 @@ from deepface import DeepFace
 from PIL import Image
 from pinecone import Pinecone
 import os
-
+import tempfile
 import uuid
 import io
 import numpy as np
@@ -14,9 +14,11 @@ from typing import List
 # === Constants ===
 MODEL_NAME = "Facenet"
 DB_DIM = 128
-MODEL_DIR = "/home/runner/.models"
-PINECONE_API_KEY = "pcsk_5hzKQE_CdKim6Y9uxdjYGMMZjWMyKVrVXBX7h4c4zq3toRGryjGft3MLK17RSs2DXMRfsz"
-INDEX_NAME = "breadmaker"
+# Use temporary directory or current directory for model storage in Render
+MODEL_DIR = os.path.join(tempfile.gettempdir(), ".models")
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY",
+                             "pcsk_5hzKQE_CdKim6Y9uxdjYGMMZjWMyKVrVXBX7h4c4zq3toRGryjGft3MLK17RSs2DXMRfsz")
+INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "breadmaker")
 
 # === Supported image formats ===
 SUPPORTED_FORMATS = {
@@ -24,18 +26,45 @@ SUPPORTED_FORMATS = {
     'image/bmp', 'image/tiff', 'image/tif', 'image/gif'
 }
 
-# === Ensure model dir exists ===
-os.makedirs(MODEL_DIR, exist_ok=True)
+# === Ensure model dir exists with proper error handling ===
+try:
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    print(f"Model directory created/verified: {MODEL_DIR}")
+except PermissionError:
+    # Fallback to current directory if temp dir fails
+    MODEL_DIR = os.path.join(os.getcwd(), ".models")
+    try:
+        os.makedirs(MODEL_DIR, exist_ok=True)
+        print(f"Using fallback model directory: {MODEL_DIR}")
+    except PermissionError:
+        # Final fallback - use current directory
+        MODEL_DIR = os.getcwd()
+        print(f"Using current directory for models: {MODEL_DIR}")
 
 # === Environment variable to override Keras model storage ===
 os.environ["KERAS_HOME"] = MODEL_DIR
 
-# === Pinecone setup ===
-pc = Pinecone(api_key=PINECONE_API_KEY)
-index = pc.Index(INDEX_NAME)
+# === Additional environment variables for Render ===
+# Set TensorFlow to use CPU only (reduces memory usage)
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+# Disable TensorFlow warnings
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+
+# === Pinecone setup with error handling ===
+try:
+    pc = Pinecone(api_key=PINECONE_API_KEY)
+    index = pc.Index(INDEX_NAME)
+    print(f"Connected to Pinecone index: {INDEX_NAME}")
+except Exception as e:
+    print(f"Warning: Failed to connect to Pinecone: {e}")
+    index = None
 
 # === FastAPI setup ===
-app = FastAPI()
+app = FastAPI(
+    title="Face Recognition API",
+    description="Face enrollment and verification service",
+    version="1.0.0"
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -44,6 +73,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def validate_pinecone_connection():
+    """Validate that Pinecone is properly connected."""
+    if index is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection unavailable. Please check configuration."
+        )
 
 
 def validate_image_format(file: UploadFile) -> None:
@@ -104,7 +142,8 @@ def get_face_embedding(img_array: np.ndarray) -> List[float]:
         embeddings = DeepFace.represent(
             img_path=img_array,
             model_name=MODEL_NAME,
-            detector_backend="opencv"
+            detector_backend="opencv",
+            enforce_detection=False  # More lenient for edge cases
         )
 
         if not embeddings:
@@ -131,16 +170,25 @@ def get_face_embedding(img_array: np.ndarray) -> List[float]:
 
 @app.get("/")
 def root():
-    return {"message": "🧠 Face Recognition API is Running!"}
+    return {
+        "message": "🧠 Face Recognition API is Running!",
+        "status": "healthy",
+        "environment": "render",
+        "model_dir": MODEL_DIR
+    }
 
 
 @app.get("/health")
 def health_check():
+    pinecone_status = "connected" if index is not None else "disconnected"
     return {
         "status": "healthy",
         "supported_formats": list(SUPPORTED_FORMATS),
         "model": MODEL_NAME,
-        "embedding_dimension": DB_DIM
+        "embedding_dimension": DB_DIM,
+        "model_directory": MODEL_DIR,
+        "pinecone_status": pinecone_status,
+        "environment": "render"
     }
 
 
@@ -148,26 +196,68 @@ def health_check():
 def enroll_ui():
     supported_formats_str = ", ".join([fmt.split("/")[1].upper() for fmt in SUPPORTED_FORMATS])
     return f"""
+    <!DOCTYPE html>
     <html>
     <head>
         <title>Face Enrollment</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
         <style>
-            body {{ font-family: Arial, sans-serif; margin: 40px; }}
+            body {{ 
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+                margin: 40px auto; 
+                max-width: 500px;
+                background: #f5f5f5;
+                padding: 20px;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 10px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            }}
             form {{ max-width: 400px; }}
-            input {{ margin: 10px 0; padding: 8px; width: 100%; }}
-            .info {{ color: #666; font-size: 0.9em; margin-bottom: 20px; }}
+            input {{ 
+                margin: 10px 0; 
+                padding: 12px; 
+                width: 100%; 
+                border: 1px solid #ddd;
+                border-radius: 5px;
+                box-sizing: border-box;
+            }}
+            input[type="submit"] {{
+                background: #007bff;
+                color: white;
+                border: none;
+                cursor: pointer;
+                font-weight: bold;
+            }}
+            input[type="submit"]:hover {{
+                background: #0056b3;
+            }}
+            .info {{ 
+                color: #666; 
+                font-size: 0.9em; 
+                margin-bottom: 20px; 
+                padding: 10px;
+                background: #f8f9fa;
+                border-radius: 5px;
+            }}
+            h2 {{ color: #333; text-align: center; }}
         </style>
     </head>
     <body>
-        <h2>Enroll Face</h2>
-        <div class="info">
-            Supported formats: {supported_formats_str}
+        <div class="container">
+            <h2>🧠 Enroll Your Face</h2>
+            <div class="info">
+                <strong>Supported formats:</strong> {supported_formats_str}<br>
+                <strong>Tips:</strong> Use clear, well-lit photos with your face clearly visible.
+            </div>
+            <form action="/enroll/" enctype="multipart/form-data" method="post">
+                <input name="name" type="text" placeholder="Enter your full name" required><br>
+                <input name="file" type="file" accept="image/*" required><br>
+                <input type="submit" value="Enroll Face">
+            </form>
         </div>
-        <form action="/enroll/" enctype="multipart/form-data" method="post">
-            <input name="name" type="text" placeholder="Your Name" required><br>
-            <input name="file" type="file" accept="image/*" required><br>
-            <input type="submit" value="Enroll Face">
-        </form>
     </body>
     </html>
     """
@@ -177,25 +267,68 @@ def enroll_ui():
 def verify_ui():
     supported_formats_str = ", ".join([fmt.split("/")[1].upper() for fmt in SUPPORTED_FORMATS])
     return f"""
+    <!DOCTYPE html>
     <html>
     <head>
         <title>Face Verification</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
         <style>
-            body {{ font-family: Arial, sans-serif; margin: 40px; }}
+            body {{ 
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+                margin: 40px auto; 
+                max-width: 500px;
+                background: #f5f5f5;
+                padding: 20px;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 10px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            }}
             form {{ max-width: 400px; }}
-            input {{ margin: 10px 0; padding: 8px; width: 100%; }}
-            .info {{ color: #666; font-size: 0.9em; margin-bottom: 20px; }}
+            input {{ 
+                margin: 10px 0; 
+                padding: 12px; 
+                width: 100%; 
+                border: 1px solid #ddd;
+                border-radius: 5px;
+                box-sizing: border-box;
+            }}
+            input[type="submit"] {{
+                background: #28a745;
+                color: white;
+                border: none;
+                cursor: pointer;
+                font-weight: bold;
+            }}
+            input[type="submit"]:hover {{
+                background: #218838;
+            }}
+            .info {{ 
+                color: #666; 
+                font-size: 0.9em; 
+                margin-bottom: 20px; 
+                padding: 10px;
+                background: #f8f9fa;
+                border-radius: 5px;
+            }}
+            h2 {{ color: #333; text-align: center; }}
         </style>
     </head>
     <body>
-        <h2>Verify Face</h2>
-        <div class="info">
-            Supported formats: {supported_formats_str}
+        <div class="container">
+            <h2>🔍 Verify Your Face</h2>
+            <div class="info">
+                <strong>Supported formats:</strong> {supported_formats_str}<br>
+                <strong>Tips:</strong> Use a clear photo similar to your enrollment image.
+            </div>
+            <form action="/verify/" enctype="multipart/form-data" method="post">
+                <input name="file" type="file" accept="image/*" required><br>
+                <input name="threshold" type="number" step="0.01" min="0" max="1" value="0.7" placeholder="Threshold (0.0-1.0)"><br>
+                <input type="submit" value="Verify Face">
+            </form>
         </div>
-        <form action="/verify/" enctype="multipart/form-data" method="post">
-            <input name="file" type="file" accept="image/*" required><br>
-            <input type="submit" value="Verify Face">
-        </form>
     </body>
     </html>
     """
@@ -213,6 +346,9 @@ async def enroll_face(name: str = Form(...), file: UploadFile = File(...)):
     Returns:
         Success message with enrollment details
     """
+    # Validate Pinecone connection
+    validate_pinecone_connection()
+
     # Validate image format
     validate_image_format(file)
 
@@ -240,7 +376,8 @@ async def enroll_face(name: str = Form(...), file: UploadFile = File(...)):
             "message": f"Successfully enrolled {name}",
             "id": vector_id,
             "name": name.strip(),
-            "embedding_dimension": len(embedding)
+            "embedding_dimension": len(embedding),
+            "status": "success"
         }
 
     except HTTPException:
@@ -264,6 +401,9 @@ async def verify_face(file: UploadFile = File(...), threshold: float = Form(0.7)
     Returns:
         Verification result with match details
     """
+    # Validate Pinecone connection
+    validate_pinecone_connection()
+
     # Validate image format
     validate_image_format(file)
 
@@ -294,7 +434,8 @@ async def verify_face(file: UploadFile = File(...), threshold: float = Form(0.7)
         if not result.matches:
             return {
                 "match_found": False,
-                "message": "No enrolled faces found in database"
+                "message": "No enrolled faces found in database",
+                "status": "no_matches"
             }
 
         # Get best match
@@ -308,6 +449,7 @@ async def verify_face(file: UploadFile = File(...), threshold: float = Form(0.7)
                 "id": best_match.id,
                 "confidence_score": round(best_match.score, 4),
                 "threshold_used": threshold,
+                "status": "match_found",
                 "all_matches": [
                     {
                         "name": match.metadata.get("name"),
@@ -323,7 +465,8 @@ async def verify_face(file: UploadFile = File(...), threshold: float = Form(0.7)
                 "message": f"No match found above threshold ({threshold})",
                 "best_match_score": round(best_match.score, 4),
                 "best_match_name": best_match.metadata.get("name"),
-                "threshold_used": threshold
+                "threshold_used": threshold,
+                "status": "below_threshold"
             }
 
     except HTTPException:
@@ -346,9 +489,14 @@ async def remove_face(vector_id: str):
     Returns:
         Success message
     """
+    validate_pinecone_connection()
+
     try:
         index.delete(ids=[vector_id])
-        return {"message": f"Successfully removed face with ID: {vector_id}"}
+        return {
+            "message": f"Successfully removed face with ID: {vector_id}",
+            "status": "success"
+        }
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -365,6 +513,8 @@ async def list_enrolled_faces():
     Returns:
         List of enrolled faces with their metadata
     """
+    validate_pinecone_connection()
+
     try:
         # Query with a dummy vector to get all stored vectors
         # This is not ideal for large datasets - consider using Pinecone's describe_index_stats
@@ -386,7 +536,8 @@ async def list_enrolled_faces():
 
         return {
             "total_faces": len(faces),
-            "faces": faces
+            "faces": faces,
+            "status": "success"
         }
 
     except Exception as e:
@@ -394,3 +545,16 @@ async def list_enrolled_faces():
             status_code=500,
             detail=f"Failed to list faces: {str(e)}"
         )
+
+
+# Health check endpoint for Render
+@app.get("/ping")
+def ping():
+    return {"status": "ok", "message": "Service is running"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
