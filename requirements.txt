@@ -2,7 +2,7 @@ fastapi
 uvicorn
 deepface
 pillow
-pinecone-client
+pinecone
 python-multipart
 opencv-python-headless
 tensorflow-cpu>=2.19.0
