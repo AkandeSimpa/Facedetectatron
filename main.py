@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
@@ -8,7 +7,9 @@ from PIL import Image
 import shutil
 import os
 import uuid
+import threading
 
+# === Force CPU (optional) ===
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 # === Configuration ===
@@ -17,14 +18,13 @@ DB_DIM = 128  # Embedding vector dimension for Facenet
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 INDEX_NAME = "breadmaker"
 
-# === Pinecone Setup (v3 SDK) ===
+# === Pinecone Setup ===
 pc = Pinecone(api_key=PINECONE_API_KEY)
 if INDEX_NAME not in [idx["name"] for idx in pc.list_indexes()]:
     pc.create_index(name=INDEX_NAME, dimension=DB_DIM, metric="cosine")
-
 index = pc.Index(INDEX_NAME)
 
-# === FastAPI App Initialization ===
+# === FastAPI App ===
 app = FastAPI()
 
 app.add_middleware(
@@ -35,11 +35,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# === Background Model Preload ===
+def preload_deepface_model():
+    weights_path = os.path.expanduser("~/.deepface/weights/facenet_weights.h5")
+    if os.path.exists(weights_path):
+        print("📦 Facenet weights already exist. Skipping download.")
+    else:
+        print("🔧 Downloading Facenet weights and preloading model...")
+
+    try:
+        DeepFace.build_model(MODEL_NAME)
+        print("✅ DeepFace model loaded and ready!")
+    except Exception as e:
+        print(f"❌ Failed to preload model: {str(e)}")
+
+@app.on_event("startup")
+def warmup_thread():
+    threading.Thread(target=preload_deepface_model, daemon=True).start()
+
+
 # === Routes ===
 
 @app.get("/")
 def root():
     return {"message": "🧠 Face Recognition API is Running!"}
+
 
 @app.get("/ui/enroll", response_class=HTMLResponse)
 def enroll_ui():
@@ -54,6 +74,7 @@ def enroll_ui():
     </body></html>
     """
 
+
 @app.get("/ui/verify", response_class=HTMLResponse)
 def verify_ui():
     return """
@@ -65,6 +86,7 @@ def verify_ui():
         </form>
     </body></html>
     """
+
 
 @app.post("/enroll/")
 async def enroll_face(name: str = Form(...), file: UploadFile = File(...)):
@@ -98,6 +120,7 @@ async def enroll_face(name: str = Form(...), file: UploadFile = File(...)):
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+
 
 @app.post("/verify/")
 async def verify_face(file: UploadFile = File(...)):
