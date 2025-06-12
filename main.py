@@ -5,6 +5,7 @@ from deepface import DeepFace
 from PIL import Image
 from pinecone import Pinecone
 import os
+
 import uuid
 import io
 import numpy as np

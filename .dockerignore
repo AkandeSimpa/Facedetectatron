@@ -1,5 +1,36 @@
-.idea
-__pycache__
+# Common Python garbage
+__pycache__/
 *.pyc
-.env
-.DS_Store
+*.pyo
+*.pyd
+*.sqlite3
+
+# Environments
+.venv/
+env/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Model files
+*.h5
+*.tflite
+*.pt
+*.onnx
+*.pb
+models/
+
+# Cache
+.cache/
+pip-wheel-metadata/
+*.whl
+
+# Git
+.git/
+.gitignore
+
+# Dataset folders
+data/
+dataset/
+images/
