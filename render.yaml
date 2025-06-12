@@ -3,7 +3,8 @@ services:
     name: FaceDetectatron
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
+    startCommand: ./start.sh
+    timeout: 400
     envVars:
       - key: PINECONE_API_KEY
         sync: false

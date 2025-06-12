@@ -9,6 +9,8 @@ import shutil
 import os
 import uuid
 
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
 # === Configuration ===
 MODEL_NAME = "Facenet"  # Model dimension: 4096
 DB_DIM = 128  # Embedding vector dimension for Facenet
