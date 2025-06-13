@@ -1,3 +1,5 @@
+from dotenv import load_dotenv
+load_dotenv()
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
@@ -13,7 +15,7 @@ import threading
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 # === Configuration ===
-MODEL_NAME = "Facenet"  # Model dimension: 4096
+MODEL_NAME = "OpenFace"  # Model dimension: 4096
 DB_DIM = 128  # Embedding vector dimension for Facenet
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 INDEX_NAME = "breadmaker"
@@ -37,7 +39,7 @@ app.add_middleware(
 
 # === Background Model Preload ===
 def preload_deepface_model():
-    weights_path = os.path.expanduser("~/.deepface/weights/facenet_weights.h5")
+    weights_path = os.path.expanduser(f"~/.deepface/weights/{MODEL_NAME.lower()}_weights.h5")
     if os.path.exists(weights_path):
         print("📦 Facenet weights already exist. Skipping download.")
     else:
