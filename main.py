@@ -1,29 +1,28 @@
-from dotenv import load_dotenv
+from dotenv import load_dotenv      # Needed to load .env file
 load_dotenv()
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+import os
+import shutil
+import uuid
+
+import cv2
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
-from deepface import DeepFace
 from pinecone import Pinecone
-from PIL import Image
-import shutil
-import os
-import uuid
-import threading
 
-# === Force CPU (optional) ===
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-
-# === Configuration ===
-MODEL_NAME = "OpenFace"  # Model dimension: 4096
-DB_DIM = 128  # Embedding vector dimension for Facenet
+# === Config ===
+MODEL_PATH = "models/openface.nn4.small2.v1.t7"
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 INDEX_NAME = "breadmaker"
+EMBEDDING_DIM = 128
+
+# === Load OpenFace Model ===
+face_embedder = cv2.dnn.readNetFromTorch(MODEL_PATH)
 
 # === Pinecone Setup ===
 pc = Pinecone(api_key=PINECONE_API_KEY)
 if INDEX_NAME not in [idx["name"] for idx in pc.list_indexes()]:
-    pc.create_index(name=INDEX_NAME, dimension=DB_DIM, metric="cosine")
+    pc.create_index(name=INDEX_NAME, dimension=EMBEDDING_DIM, metric="cosine")
 index = pc.Index(INDEX_NAME)
 
 # === FastAPI App ===
@@ -37,31 +36,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# === Background Model Preload ===
-def preload_deepface_model():
-    weights_path = os.path.expanduser(f"~/.deepface/weights/{MODEL_NAME.lower()}_weights.h5")
-    if os.path.exists(weights_path):
-        print("📦 Facenet weights already exist. Skipping download.")
-    else:
-        print("🔧 Downloading Facenet weights and preloading model...")
+# === Embedding Extraction ===
+def get_embedding(image_path):
+    image = cv2.imread(image_path)
+    if image is None:
+        raise ValueError("Invalid image")
 
-    try:
-        DeepFace.build_model(MODEL_NAME)
-        print("✅ DeepFace model loaded and ready!")
-    except Exception as e:
-        print(f"❌ Failed to preload model: {str(e)}")
-
-@app.on_event("startup")
-def warmup_thread():
-    threading.Thread(target=preload_deepface_model, daemon=True).start()
-
+    resized = cv2.resize(image, (96, 96))
+    blob = cv2.dnn.blobFromImage(resized, 1.0 / 255, (96, 96), (0, 0, 0), swapRB=True, crop=False)
+    face_embedder.setInput(blob)
+    vec = face_embedder.forward()
+    return vec.flatten().tolist()
 
 # === Routes ===
 
 @app.get("/")
 def root():
-    return {"message": "🧠 Face Recognition API is Running!"}
-
+    return {"message": "👤 OpenFace API running with OpenCV!"}
 
 @app.get("/ui/enroll", response_class=HTMLResponse)
 def enroll_ui():
@@ -75,8 +66,6 @@ def enroll_ui():
         </form>
     </body></html>
     """
-
-
 @app.get("/ui/verify", response_class=HTMLResponse)
 def verify_ui():
     return """
@@ -89,7 +78,6 @@ def verify_ui():
     </body></html>
     """
 
-
 @app.post("/enroll/")
 async def enroll_face(name: str = Form(...), file: UploadFile = File(...)):
     temp_path = f"temp_{uuid.uuid4().hex}.jpg"
@@ -97,19 +85,7 @@ async def enroll_face(name: str = Form(...), file: UploadFile = File(...)):
         with open(temp_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        if os.path.getsize(temp_path) < 1024:
-            raise HTTPException(status_code=400, detail="Uploaded file is too small or corrupted.")
-
-        img = Image.open(temp_path).convert("RGB")
-        img.save(temp_path, format="JPEG")
-
-        embedding_objs = DeepFace.represent(img_path=temp_path, model_name=MODEL_NAME, detector_backend="opencv")
-        if not embedding_objs:
-            raise HTTPException(status_code=400, detail="No face detected in the uploaded image")
-
-        emb = embedding_objs[0]["embedding"]
-        if len(emb) != DB_DIM:
-            raise HTTPException(status_code=400, detail=f"Embedding dimension mismatch. Got {len(emb)}, expected {DB_DIM}")
+        emb = get_embedding(temp_path)
 
         vector_id = f"{name.lower()}_{uuid.uuid4().hex[:8]}"
         index.upsert(vectors=[(vector_id, emb, {"name": name})])
@@ -123,7 +99,6 @@ async def enroll_face(name: str = Form(...), file: UploadFile = File(...)):
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
-
 @app.post("/verify/")
 async def verify_face(file: UploadFile = File(...)):
     temp_path = f"temp_{uuid.uuid4().hex}.jpg"
@@ -131,19 +106,7 @@ async def verify_face(file: UploadFile = File(...)):
         with open(temp_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        if os.path.getsize(temp_path) < 1024:
-            raise HTTPException(status_code=400, detail="Uploaded file is too small or corrupted.")
-
-        img = Image.open(temp_path).convert("RGB")
-        img.save(temp_path, format="JPEG")
-
-        embedding_objs = DeepFace.represent(img_path=temp_path, model_name=MODEL_NAME, detector_backend="opencv")
-        if not embedding_objs:
-            raise HTTPException(status_code=400, detail="No face detected in the uploaded image")
-
-        emb = embedding_objs[0]["embedding"]
-        if len(emb) != DB_DIM:
-            raise HTTPException(status_code=400, detail=f"Embedding dimension mismatch. Got {len(emb)}, expected {DB_DIM}")
+        emb = get_embedding(temp_path)
 
         query_result = index.query(vector=emb, top_k=1, include_metadata=True)
         if not query_result.matches:
