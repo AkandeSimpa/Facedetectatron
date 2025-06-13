@@ -1,4 +1,6 @@
 fastapi~=0.115.12
 pinecone~=7.0.2
-opencv-python~=4.11.0.86
+opencv-python-headless~=4.11.0.86
 python-dotenv~=1.1.0
+gunicorn
+uvicorn[standard]
