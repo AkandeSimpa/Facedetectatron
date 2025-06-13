@@ -4,3 +4,4 @@ opencv-python-headless~=4.11.0.86
 python-dotenv~=1.1.0
 gunicorn
 uvicorn[standard]
+python-multipart
